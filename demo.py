@@ -1,8 +1,8 @@
 from typing import Dict, Union
-from gliner import GLiNER
 import gradio as gr
+from gliner import GLiNER
 
-model = GLiNER.from_pretrained("model/", load_tokenizer=True)
+model = GLiNER.from_pretrained("knowledgator/gliner-bi-large-v1.0", load_tokenizer=True)
 
 examples = [
     [

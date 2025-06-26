@@ -1,4 +1,3 @@
-
 from gliner import GLiNER
 import spacy
 import os
@@ -100,6 +99,15 @@ def extract_relations_from_paragraph(paragraph, max_distance_ratio=MAX_DISTANCE_
         threshold=confidence_threshold
     )
     
+    # Process entities to handle negation
+    processed_entities = []
+    for entity in entities:
+        expanded_entity = expand_entity_with_negation(processed_paragraph, entity)
+        processed_entities.append(expanded_entity)
+    
+    # Filter overlapping entities (prefer negated/longer entities)
+    entities = filter_overlapping_entities(processed_entities)
+    
     # Find relations
     relations = []
     processed_pairs = set()  # Track processed entity pairs to avoid duplicates
@@ -199,6 +207,201 @@ def extract_relations_from_paragraph(paragraph, max_distance_ratio=MAX_DISTANCE_
     
     return entities, relations
 
+def detect_negation(text, entity_start, entity_end):
+    """Detect if an entity is negated by looking for negation words before it within the same sentence"""
+    # Common negation patterns in medical text
+    negation_patterns = [
+        r'\bno\b',
+        r'\bnot\b', 
+        r'\babsent\b',
+        r'\bwithout\b',
+        r'\bdenies\b',
+        r'\bnegative\s+for\b',
+        r'\brule\s+out\b',
+        r'\bunremarkable\b',
+        r'\bnormal\b',
+        r'\bno\s+evidence\s+of\b',
+        r'\bno\s+signs\s+of\b',
+        r'\bfree\s+of\b'
+    ]
+    
+    # Find the start of the current sentence (look backwards for sentence boundaries)
+    # In medical reports, don't treat colons as sentence boundaries
+    sentence_start = entity_start
+    for i in range(entity_start - 1, max(0, entity_start - 200), -1):
+        if text[i] in '.!?':
+            # Found sentence boundary, start after it
+            sentence_start = i + 1
+            break
+        elif i == 0:
+            # Reached beginning of text
+            sentence_start = 0
+            break
+    
+    # Get text from sentence start to entity start
+    search_text = text[sentence_start:entity_start].strip().lower()
+    
+    # If search text is empty or very short, expand the search window
+    if len(search_text) < 10:
+        # Look further back but still respect sentence boundaries
+        extended_start = max(0, entity_start - 100)
+        extended_text = text[extended_start:entity_start].lower()
+        
+        # Find the last sentence boundary in the extended text
+        last_boundary = -1
+        for i in range(len(extended_text) - 1, -1, -1):
+            if extended_text[i] in '.!?':
+                last_boundary = i
+                break
+        
+        if last_boundary >= 0:
+            search_text = extended_text[last_boundary + 1:].strip()
+        else:
+            search_text = extended_text.strip()
+    
+    # If search text is too long, limit it
+    if len(search_text) > 150:
+        search_text = search_text[-150:]
+    
+    # Check for negation patterns
+    for pattern in negation_patterns:
+        matches = list(re.finditer(pattern, search_text))
+        if matches:
+            # Use the last match (closest to entity)
+            last_match = matches[-1]
+            # Make sure there's no intervening positive words that would cancel negation
+            intervening_text = search_text[last_match.end():]
+            positive_patterns = [r'\bbut\b', r'\bhowever\b', r'\bexcept\b', r'\balthough\b', r'\bpresent\b', r'\bseen\b']
+            
+            # If no positive words intervene, it's negated
+            if not any(re.search(pos_pattern, intervening_text) for pos_pattern in positive_patterns):
+                return True
+    
+    return False
+
+def expand_entity_with_negation(text, entity):
+    """Expand entity text to include negation if present within the same sentence"""
+    entity_start = entity["start"]
+    entity_end = entity["end"]
+    entity_text = entity["text"]
+    
+    # Check if entity is negated
+    if detect_negation(text, entity_start, entity_end):
+        # Find the sentence start (don't cross sentence boundaries marked by ., !, ?)
+        sentence_start = 0
+        for i in range(entity_start - 1, max(0, entity_start - 200), -1):
+            if text[i] in '.!?':
+                sentence_start = i + 1
+                break
+            elif i == 0:
+                sentence_start = 0
+                break
+        
+        # Get text from sentence start to entity start
+        search_text = text[sentence_start:entity_start]
+        
+        # Find the negation word and include it
+        negation_words = ['no', 'not', 'absent', 'without', 'denies', 'unremarkable', 'normal']
+        negation_phrases = ['negative for', 'rule out', 'no evidence of', 'no signs of', 'free of']
+        
+        # Check for phrases first
+        for phrase in negation_phrases:
+            phrase_pattern = phrase.replace(' ', r'\s+')
+            match = re.search(rf'\b{phrase_pattern}\b', search_text.lower())
+            if match:
+                negation_start = sentence_start + match.start()
+                new_text = text[negation_start:entity_end].strip()
+                return {
+                    **entity,
+                    "text": new_text,
+                    "start": negation_start,
+                    "original_text": entity_text,
+                    "is_negated": True
+                }
+        
+        # Check for single words (find the closest one to the entity)
+        best_match = None
+        best_distance = float('inf')
+        
+        for word in negation_words:
+            word_pattern = rf'\b{word}\b'
+            matches = list(re.finditer(word_pattern, search_text.lower()))
+            for match in matches:
+                # Calculate distance from negation word to entity
+                distance = entity_start - (sentence_start + match.end())
+                if distance < best_distance and distance >= 0:
+                    best_distance = distance
+                    best_match = match
+        
+        if best_match:
+            negation_start = sentence_start + best_match.start()
+            new_text = text[negation_start:entity_end].strip()
+            return {
+                **entity,
+                "text": new_text,
+                "start": negation_start,
+                "original_text": entity_text,
+                "is_negated": True
+            }
+    
+    # Not negated, return original entity with flag
+    return {
+        **entity,
+        "original_text": entity_text,
+        "is_negated": False
+    }
+
+def filter_overlapping_entities(entities):
+    """Filter overlapping entities, preferring longer/negated entities"""
+    if not entities:
+        return entities
+    
+    # Sort entities by start position
+    sorted_entities = sorted(entities, key=lambda x: x['start'])
+    filtered = []
+    
+    for entity in sorted_entities:
+        # Check if this entity overlaps with any already filtered entity
+        should_add = True
+        entities_to_remove = []
+        
+        for i, existing in enumerate(filtered):
+            # Check for overlap
+            if (entity['start'] < existing['end'] and entity['end'] > existing['start']):
+                # Entities overlap - decide which to keep
+                keep_new = False
+                
+                # Prefer negated entities
+                if entity.get('is_negated', False) and not existing.get('is_negated', False):
+                    keep_new = True
+                elif not entity.get('is_negated', False) and existing.get('is_negated', False):
+                    keep_new = False
+                # If both or neither are negated, prefer longer entity
+                elif len(entity['text']) > len(existing['text']):
+                    keep_new = True
+                elif len(entity['text']) < len(existing['text']):
+                    keep_new = False
+                # If same length, prefer higher confidence
+                elif entity['score'] > existing['score']:
+                    keep_new = True
+                
+                if keep_new:
+                    # Mark existing entity for removal
+                    entities_to_remove.append(i)
+                else:
+                    # Don't add the new entity
+                    should_add = False
+                    break
+        
+        # Remove entities marked for removal (in reverse order to maintain indices)
+        for i in reversed(entities_to_remove):
+            filtered.pop(i)
+        
+        if should_add:
+            filtered.append(entity)
+    
+    return filtered
+
 def process_directory(directory_path):
     """Process all files in directory"""
     files_content = read_files_from_directory(directory_path)
@@ -238,7 +441,9 @@ def process_directory(directory_path):
             print(f"Entities found: {len(entities)}")
             if entities:
                 for ent in entities:
-                    print(f"  - {ent['label']}: '{ent['text']}' (score: {ent['score']:.3f}, pos: {ent['start']}-{ent['end']})")
+                    negation_flag = " [NEGATED]" if ent.get('is_negated', False) else ""
+                    original_text = f" (original: '{ent.get('original_text', ent['text'])}')" if ent.get('is_negated', False) else ""
+                    print(f"  - {ent['label']}: '{ent['text']}'{negation_flag} (score: {ent['score']:.3f}, pos: {ent['start']}-{ent['end']}){original_text}")
             
             print(f"Relations found: {len(relations)}")
             if relations:

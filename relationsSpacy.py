@@ -317,16 +317,45 @@ def expand_entity_with_negation(text, entity):
     # Check if entity is negated
     if detect_negation(text, entity_start, entity_end):
         # For structured field patterns (e.g., "Hydronephrosis: None"), 
-        # don't expand text - just mark as negated
+        # expand text to include the field value and mark as negated
         after_entity = text[entity_end:entity_end + 20].strip().lower()
-        if (after_entity.startswith(': none') or after_entity.startswith(':none') or
-            after_entity.startswith(': present') or after_entity.startswith(':present')):
-            # This is a structured field pattern - don't expand the text
-            return {
-                **entity,
-                "original_text": entity_text,
-                "is_negated": True
-            }
+        if (after_entity.startswith(': none') or after_entity.startswith(':none')):
+            # Find the end of the field value
+            colon_pos = text.find(':', entity_end)
+            if colon_pos != -1:
+                # Look for the end of the value (space, newline, or punctuation)
+                value_start = colon_pos + 1
+                value_end = value_start
+                while value_end < len(text) and text[value_end] not in '\n.;,':
+                    value_end += 1
+                
+                # Create expanded text that includes "Field: Value"
+                expanded_text = text[entity_start:value_end].strip()
+                return {
+                    **entity,
+                    "text": expanded_text,
+                    "end": value_end,
+                    "original_text": entity_text,
+                    "is_negated": True
+                }
+        elif (after_entity.startswith(': present') or after_entity.startswith(':present') or
+              after_entity.startswith(': positive') or after_entity.startswith(':positive')):
+            # Affirmative structured field pattern - expand but mark as not negated
+            colon_pos = text.find(':', entity_end)
+            if colon_pos != -1:
+                value_start = colon_pos + 1
+                value_end = value_start
+                while value_end < len(text) and text[value_end] not in '\n.;,':
+                    value_end += 1
+                
+                expanded_text = text[entity_start:value_end].strip()
+                return {
+                    **entity,
+                    "text": expanded_text,
+                    "end": value_end,
+                    "original_text": entity_text,
+                    "is_negated": False
+                }
         # Find the sentence start (don't cross sentence boundaries marked by ., !, ?)
         sentence_start = 0
         for i in range(entity_start - 1, max(0, entity_start - 200), -1):

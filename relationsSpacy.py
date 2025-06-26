@@ -108,6 +108,9 @@ def extract_relations_from_paragraph(paragraph, max_distance_ratio=MAX_DISTANCE_
     # Filter overlapping entities (prefer negated/longer entities)
     entities = filter_overlapping_entities(processed_entities)
     
+    # Filter out spurious field value entities (like standalone "None", "Present", etc.)
+    entities = filter_field_value_entities(entities, processed_paragraph)
+    
     # Find relations
     relations = []
     processed_pairs = set()  # Track processed entity pairs to avoid duplicates
@@ -439,6 +442,52 @@ def filter_overlapping_entities(entities):
     
     return filtered
 
+def filter_field_value_entities(entities, text):
+    """Filter out spurious field value entities that are part of structured patterns"""
+    if not entities:
+        return entities
+    
+    # Common field values that should not be standalone entities
+    field_values = {
+        'none', 'present', 'positive', 'negative', 'normal', 'abnormal',
+        'seen', 'not seen', 'stable', 'improved', 'decreased', 'increased',
+        'adequate', 'unremarkable', 'clear', 'enlarged', 'small'
+    }
+    
+    filtered_entities = []
+    
+    for entity in entities:
+        entity_text = entity['text'].lower().strip()
+        
+        # If this entity is a common field value, check if it's part of a structured pattern
+        if entity_text in field_values:
+            entity_start = entity['start']
+            entity_end = entity['end']
+            
+            # Check text immediately before this entity (look for "Field: " pattern)
+            # Look back up to 50 characters to find the pattern
+            search_start = max(0, entity_start - 50)
+            before_text = text[search_start:entity_start]
+            
+            # Look for colon followed by optional whitespace/newlines immediately before entity
+            # This catches patterns like "Hydronephrosis: None" or "Size:\nNormal"
+            if re.search(r':\s*$', before_text):
+                # This appears to be a field value (e.g., "Hydronephrosis: None")
+                # Skip this entity
+                continue
+            
+            # Additional check: look for the pattern where the entity is at the start of a line
+            # and preceded by a line ending with colon
+            lines_before = before_text.split('\n')
+            if len(lines_before) > 1 and lines_before[-2].strip().endswith(':'):
+                # Entity is on a new line after a line ending with colon
+                continue
+        
+        # Keep all other entities (including field names that are followed by colons)
+        filtered_entities.append(entity)
+    
+    return filtered_entities
+
 def process_directory(directory_path):
     """Process all files in directory"""
     files_content = read_files_from_directory(directory_path)
@@ -478,7 +527,7 @@ def process_directory(directory_path):
             print(f"Entities found: {len(entities)}")
             if entities:
                 for ent in entities:
-                    negation_flag = " [NEGATED]" if ent.get('is_negated', False) else ""
+                    negation_flag = " [NEGATED or NORMAL]" if ent.get('is_negated', False) else ""
                     original_text = f" (original: '{ent.get('original_text', ent['text'])}')" if ent.get('is_negated', False) else ""
                     print(f"  - {ent['label']}: '{ent['text']}'{negation_flag} (score: {ent['score']:.3f}, pos: {ent['start']}-{ent['end']}){original_text}")
             

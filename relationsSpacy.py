@@ -222,8 +222,34 @@ def detect_negation(text, entity_start, entity_end):
         r'\bnormal\b',
         r'\bno\s+evidence\s+of\b',
         r'\bno\s+signs\s+of\b',
-        r'\bfree\s+of\b'
+        r'\bfree\s+of\b',
+        r'\bnone\b'  # Added for structured field patterns like "Hydronephrosis: None"
     ]
+    
+    # Special handling for structured field patterns (Field: Value)
+    # Look for patterns like "Hydronephrosis: None" or "Pain: Present"
+    entity_text = text[entity_start:entity_end]
+    
+    # Check if this entity is followed by ": None" pattern
+    after_entity = text[entity_end:entity_end + 20].strip().lower()
+    if after_entity.startswith(': none') or after_entity.startswith(':none'):
+        return True
+    
+    # Check if this entity is preceded by "None:" pattern (value before field)
+    before_entity = text[max(0, entity_start - 20):entity_start].strip().lower()
+    if before_entity.endswith('none :') or before_entity.endswith('none:'):
+        return True
+    
+    # Check for affirmative patterns that should NOT be negated
+    affirmative_patterns_after = [': present', ':present', ': seen', ':seen', ': positive', ':positive']
+    for pattern in affirmative_patterns_after:
+        if after_entity.startswith(pattern):
+            return False
+    
+    affirmative_patterns_before = ['present :', 'present:', 'seen :', 'seen:', 'positive :', 'positive:']
+    for pattern in affirmative_patterns_before:
+        if before_entity.endswith(pattern):
+            return False
     
     # Find the start of the current sentence (look backwards for sentence boundaries)
     # In medical reports, don't treat colons as sentence boundaries
@@ -287,6 +313,17 @@ def expand_entity_with_negation(text, entity):
     
     # Check if entity is negated
     if detect_negation(text, entity_start, entity_end):
+        # For structured field patterns (e.g., "Hydronephrosis: None"), 
+        # don't expand text - just mark as negated
+        after_entity = text[entity_end:entity_end + 20].strip().lower()
+        if (after_entity.startswith(': none') or after_entity.startswith(':none') or
+            after_entity.startswith(': present') or after_entity.startswith(':present')):
+            # This is a structured field pattern - don't expand the text
+            return {
+                **entity,
+                "original_text": entity_text,
+                "is_negated": True
+            }
         # Find the sentence start (don't cross sentence boundaries marked by ., !, ?)
         sentence_start = 0
         for i in range(entity_start - 1, max(0, entity_start - 200), -1):

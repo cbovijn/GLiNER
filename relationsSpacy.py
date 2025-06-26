@@ -5,7 +5,7 @@ import re
 
 # Configuration
 CONFIDENCE_THRESHOLD = 0.1  # Minimum confidence score for entity recognition (0.0 to 1.0)
-MAX_DISTANCE_RATIO = 0.8    # Maximum distance between entities as ratio of paragraph length (increased for medical reports)
+MAX_DISTANCE_RATIO = 0.85   # Maximum distance between entities as ratio of paragraph length (increased for medical reports)
 MIN_DISTANCE = 50           # Minimum distance threshold in characters (increased for medical reports)
 
 # Laad GLiNER en spaCy
@@ -121,12 +121,12 @@ def extract_relations_from_paragraph(paragraph, max_distance_ratio=MAX_DISTANCE_
             # Calculate distance between entities
             distance = abs(ent2["start"] - ent1["end"])
             
-            # Special case: If BodyStructure is at the beginning of paragraph (position < 20)
+            # Special case: If BodyStructure is at the beginning of paragraph (position < 30)
             # and is followed by clinical findings/symptoms, use more lenient distance
-            if ((ent1["label"] == "BodyStructure" and ent1["start"] < 20) or 
-                (ent2["label"] == "BodyStructure" and ent2["start"] < 20)):
+            if ((ent1["label"] == "BodyStructure" and ent1["start"] < 30) or 
+                (ent2["label"] == "BodyStructure" and ent2["start"] < 30)):
                 # For medical reports where anatomy is mentioned first, allow larger distances
-                max_distance_for_relation = max(max_distance, paragraph_length * 0.8)
+                max_distance_for_relation = max(max_distance, int(paragraph_length * 0.9))
             else:
                 max_distance_for_relation = max_distance
             

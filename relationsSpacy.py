@@ -421,7 +421,7 @@ def expand_entity_with_negation(text, entity):
     }
 
 def filter_overlapping_entities(entities):
-    """Filter overlapping entities, preferring longer/negated entities"""
+    """Filter overlapping entities while preserving nested entities"""
     if not entities:
         return entities
     
@@ -437,30 +437,57 @@ def filter_overlapping_entities(entities):
         for i, existing in enumerate(filtered):
             # Check for overlap
             if (entity['start'] < existing['end'] and entity['end'] > existing['start']):
-                # Entities overlap - decide which to keep
-                keep_new = False
+                # Determine the type of overlap
+                entity_contains_existing = (entity['start'] <= existing['start'] and entity['end'] >= existing['end'])
+                existing_contains_entity = (existing['start'] <= entity['start'] and existing['end'] >= entity['end'])
                 
-                # Prefer negated entities
-                if entity.get('is_negated', False) and not existing.get('is_negated', False):
-                    keep_new = True
-                elif not entity.get('is_negated', False) and existing.get('is_negated', False):
+                # Case 1: Perfect duplicate (same boundaries) - keep the better one
+                if (entity['start'] == existing['start'] and entity['end'] == existing['end']):
                     keep_new = False
-                # If both or neither are negated, prefer longer entity
-                elif len(entity['text']) > len(existing['text']):
-                    keep_new = True
-                elif len(entity['text']) < len(existing['text']):
-                    keep_new = False
-                # If same length, prefer higher confidence
-                elif entity['score'] > existing['score']:
-                    keep_new = True
+                    # Prefer negated entities for same boundaries
+                    if entity.get('is_negated', False) and not existing.get('is_negated', False):
+                        keep_new = True
+                    elif not entity.get('is_negated', False) and existing.get('is_negated', False):
+                        keep_new = False
+                    # If both or neither are negated, prefer higher confidence
+                    elif entity['score'] > existing['score']:
+                        keep_new = True
+                    
+                    if keep_new:
+                        entities_to_remove.append(i)
+                    else:
+                        should_add = False
+                        break
                 
-                if keep_new:
-                    # Mark existing entity for removal
-                    entities_to_remove.append(i)
+                # Case 2: Nested entities - keep both (this preserves nested NER)
+                elif entity_contains_existing or existing_contains_entity:
+                    # Keep both entities as they represent different levels of annotation
+                    # e.g., "right kidney" (BodyStructure) nested within "right kidney dysfunction" (ClinicalFinding)
+                    continue
+                
+                # Case 3: Partial overlap - resolve conflict by keeping the longer/better entity
                 else:
-                    # Don't add the new entity
-                    should_add = False
-                    break
+                    keep_new = False
+                    
+                    # Prefer negated entities
+                    if entity.get('is_negated', False) and not existing.get('is_negated', False):
+                        keep_new = True
+                    elif not entity.get('is_negated', False) and existing.get('is_negated', False):
+                        keep_new = False
+                    # If both or neither are negated, prefer longer entity
+                    elif len(entity['text']) > len(existing['text']):
+                        keep_new = True
+                    elif len(entity['text']) < len(existing['text']):
+                        keep_new = False
+                    # If same length, prefer higher confidence
+                    elif entity['score'] > existing['score']:
+                        keep_new = True
+                    
+                    if keep_new:
+                        entities_to_remove.append(i)
+                    else:
+                        should_add = False
+                        break
         
         # Remove entities marked for removal (in reverse order to maintain indices)
         for i in reversed(entities_to_remove):
